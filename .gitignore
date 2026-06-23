@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
+# Never commit real secrets
+.env
+.env.*
+!.env.example
