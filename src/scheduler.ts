@@ -1,35 +1,52 @@
-import { db } from './db.js';
+import { pool } from './db.js';
 import { config, isWhatsAppConfigured } from './config.js';
 import { sendWhatsAppMessage } from './services/whatsapp.js';
 import { autoReminderMessage } from './services/reminders.js';
 import type { WhatsAppReminder } from './types.js';
 
-type ReminderRow = WhatsAppReminder & { businessId: string };
+type DueReminder = WhatsAppReminder & {
+  businessId: string;
+  businessName: string | null;
+  invNumber: string | null;
+};
 
 /** Finds due, still-queued reminders across all businesses and auto-sends them. */
 async function processDueReminders(): Promise<void> {
   if (!isWhatsAppConfigured()) return;
 
   const today = new Date().toISOString().split('T')[0];
-  const due = db
-    .prepare("SELECT * FROM reminders WHERE status = 'QUEUED' AND scheduledFor <= ?")
-    .all(today) as ReminderRow[];
+  // Single JOIN instead of two extra lookups per reminder (no N+1).
+  const { rows } = await pool.query(
+    `SELECT r.*, b.name AS "businessName", i."invoiceNumber" AS "invNumber"
+       FROM reminders r
+       LEFT JOIN businesses b ON b.id = r."businessId"
+       LEFT JOIN invoices  i ON i.id = r."invoiceId"
+      WHERE r.status = 'QUEUED' AND r."scheduledFor" <= $1`,
+    [today],
+  );
 
-  for (const rem of due) {
-    const biz = db.prepare('SELECT name FROM businesses WHERE id = ?').get(rem.businessId) as { name: string } | undefined;
-    const inv = db.prepare('SELECT invoiceNumber FROM invoices WHERE id = ?').get(rem.invoiceId) as { invoiceNumber: string } | undefined;
-    const message = autoReminderMessage(rem, biz?.name ?? 'CreditFlow', inv?.invoiceNumber ?? rem.invoiceId);
-
-    const outcome = await sendWhatsAppMessage(rem.customerMobile, message);
-    if (outcome.ok) {
-      db.prepare("UPDATE reminders SET status = 'SENT', sentAt = ? WHERE id = ?").run(new Date().toISOString(), rem.id);
-      console.log(`[scheduler] sent ${rem.triggerType} to +91 ${rem.customerMobile}`);
-    } else {
-      db.prepare("UPDATE reminders SET status = 'FAILED' WHERE id = ?").run(rem.id);
-      console.warn(`[scheduler] failed reminder ${rem.id}: ${outcome.error}`);
+  for (const rem of rows as DueReminder[]) {
+    // Isolate failures so one bad reminder can't abort the whole cycle.
+    try {
+      const message = autoReminderMessage(rem, rem.businessName ?? 'CreditFlow', rem.invNumber ?? rem.invoiceId);
+      const outcome = await sendWhatsAppMessage(rem.customerMobile, message);
+      if (outcome.ok) {
+        await pool.query(`UPDATE reminders SET status = 'SENT', "sentAt" = $1 WHERE id = $2`, [new Date().toISOString(), rem.id]);
+        console.log(`[scheduler] sent ${rem.triggerType} to +91 ${rem.customerMobile}`);
+      } else {
+        await pool.query(`UPDATE reminders SET status = 'FAILED' WHERE id = $1`, [rem.id]);
+        console.warn(`[scheduler] failed reminder ${rem.id}: ${outcome.error}`);
+      }
+    } catch (err) {
+      console.error(`[scheduler] error processing reminder ${rem.id}:`, err);
     }
   }
 }
+
+/** Runs one cycle, swallowing any error so an unhandled rejection can't crash the process. */
+const runCycle = (): void => {
+  void processDueReminders().catch((err) => console.error('[scheduler] cycle failed:', err));
+};
 
 /** Starts the auto-send loop (no-op when WhatsApp API isn't configured). */
 export function startScheduler(): void {
@@ -39,6 +56,6 @@ export function startScheduler(): void {
   }
   const seconds = Math.round(config.whatsapp.schedulerIntervalMs / 1000);
   console.log(`✓ WhatsApp auto-send scheduler active (every ${seconds}s).`);
-  setTimeout(() => void processDueReminders(), 10_000);
-  setInterval(() => void processDueReminders(), config.whatsapp.schedulerIntervalMs);
+  setTimeout(runCycle, 10_000);
+  setInterval(runCycle, config.whatsapp.schedulerIntervalMs);
 }

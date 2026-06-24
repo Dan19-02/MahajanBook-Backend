@@ -3,9 +3,9 @@
 An **Express + TypeScript** API for the Ledgix (CreditFlow) app. It provides:
 
 - **JWT authentication** (register / login) with bcrypt-hashed passwords.
-- A **shared SQLite database** (`better-sqlite3`) holding all business data
+- A **shared PostgreSQL database** (via `pg`) holding all business data
   (products, customers, invoices, transactions, reminders) — shared across every
-  logged-in user of the shop.
+  logged-in user of the shop. The schema is created automatically on first boot.
 - **Server-side business logic**: invoice pricing, stock, ledger balances, the
   reminder schedule, payments, and reconciliation.
 - **AI reminder drafting** with **MiniMax-M3** (via NVIDIA), key held server-side.
@@ -15,9 +15,12 @@ An **Express + TypeScript** API for the Ledgix (CreditFlow) app. It provides:
 ```bash
 cd "Ledgix Backend"
 npm install
-cp .env.example .env   # set NVIDIA_API_KEY and a JWT_SECRET
+cp .env.example .env   # set DATABASE_URL, NVIDIA_API_KEY, and a JWT_SECRET
 npm run dev            # http://localhost:3001  (auto-reloads)
 ```
+
+Requires a reachable **PostgreSQL** instance — point `DATABASE_URL` at it (local,
+or a hosted provider like Render/Supabase/Neon). The schema is created on boot.
 
 Production build: `npm run build && npm start`.
 
@@ -28,7 +31,8 @@ Production build: `npm run build && npm start`.
 | `NVIDIA_API_KEY`     | _(required for AI)_                    | NVIDIA Integrate key for MiniMax-M3.      |
 | `JWT_SECRET`         | _(insecure default — set this!)_      | Secret used to sign JWTs.                 |
 | `JWT_EXPIRES_IN_SECONDS` | `604800` (7 days)                 | Token lifetime.                           |
-| `DB_PATH`            | `./ledgix.db`                         | SQLite database file.                     |
+| `DATABASE_URL`       | _(required)_                          | PostgreSQL connection string (`postgresql://user:pass@host:port/db`). |
+| `DATABASE_SSL`       | _(auto)_                              | `true`/`false` to force DB SSL; auto-detects from host otherwise. |
 | `PORT`               | `3001`                                | Port the server listens on.               |
 | `CORS_ORIGIN`        | `http://localhost:3000`               | Comma-separated allowed frontend origins. |
 | `MINIMAX_MODEL`      | `minimaxai/minimax-m3`                | Model id.                                 |

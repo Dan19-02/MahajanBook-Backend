@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { config, isAiConfigured, isJwtSecretInsecure, isWhatsAppConfigured } from './config.js';
-import './db.js'; // open the database and ensure the schema exists
+import { initDb } from './db.js';
 import authRouter from './routes/auth.js';
 import aiRouter from './routes/reminders.js';
 import dataRouter from './routes/data.js';
@@ -12,6 +12,8 @@ import { startScheduler } from './scheduler.js';
 
 const app = express();
 app.disable('x-powered-by');
+// Trust the configured proxy so rate-limiting and req.ip see the real client IP.
+app.set('trust proxy', config.trustProxy);
 
 app.use(helmet());
 app.use(cors({ origin: config.corsOrigin }));
@@ -52,13 +54,22 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Not found.' });
 });
 
-app.listen(config.port, () => {
-  console.log(`Ledgix backend listening on http://localhost:${config.port}`);
-  if (!isAiConfigured()) {
-    console.warn('⚠  NVIDIA_API_KEY is not set — /api/ai/draft will return 503 until it is configured.');
-  }
-  if (isJwtSecretInsecure()) {
-    console.warn('⚠  JWT_SECRET is the insecure default — set JWT_SECRET in .env before production.');
-  }
-  startScheduler();
+/** Connect to Postgres (ensuring the schema) before accepting traffic. */
+async function start(): Promise<void> {
+  await initDb();
+  app.listen(config.port, () => {
+    console.log(`Ledgix backend listening on http://localhost:${config.port}`);
+    if (!isAiConfigured()) {
+      console.warn('⚠  NVIDIA_API_KEY is not set — /api/ai/draft will return 503 until it is configured.');
+    }
+    if (isJwtSecretInsecure()) {
+      console.warn('⚠  JWT_SECRET is the insecure default — set JWT_SECRET in .env before production.');
+    }
+    startScheduler();
+  });
+}
+
+start().catch((err) => {
+  console.error('❌ Failed to start server:', err);
+  process.exit(1);
 });

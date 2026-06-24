@@ -1,6 +1,8 @@
 import 'dotenv/config';
 
 const DEFAULT_JWT_SECRET = 'dev-insecure-secret-change-me';
+// Publicly-known placeholders that must never reach production.
+const KNOWN_WEAK_SECRETS = new Set([DEFAULT_JWT_SECRET, 'change-me-to-a-long-random-string']);
 
 /**
  * Centralised, validated runtime configuration.
@@ -15,7 +17,19 @@ export const config = {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
-  dbPath: process.env.DB_PATH?.trim() || './ledgix.db',
+  // Proxy hops to trust so req.ip / rate-limiting see the real client behind a
+  // reverse proxy. Set TRUST_PROXY=1 on Render/Heroku/Nginx; unset for direct exposure.
+  trustProxy: ((): boolean | number => {
+    const v = process.env.TRUST_PROXY?.trim();
+    if (!v || v === 'false') return false;
+    if (v === 'true') return true;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : false;
+  })(),
+  // PostgreSQL connection string, e.g. postgresql://user:pass@host:5432/dbname
+  databaseUrl: process.env.DATABASE_URL?.trim() || '',
+  // SSL override: 'true'/'false' force it; anything else auto-detects from the host.
+  databaseSsl: process.env.DATABASE_SSL?.trim().toLowerCase() ?? '',
   jwt: {
     secret: process.env.JWT_SECRET?.trim() || DEFAULT_JWT_SECRET,
     expiresInSeconds: Number(process.env.JWT_EXPIRES_IN_SECONDS ?? 60 * 60 * 24 * 7),
@@ -41,5 +55,6 @@ export const isAiConfigured = (): boolean => config.nvidia.apiKey.length > 0;
 export const isWhatsAppConfigured = (): boolean =>
   Boolean(config.whatsapp.token && config.whatsapp.phoneId);
 
-/** True when the JWT secret is still the insecure default (warned at boot). */
-export const isJwtSecretInsecure = (): boolean => config.jwt.secret === DEFAULT_JWT_SECRET;
+/** True when the JWT secret is a known placeholder or too short to be safe (warned at boot). */
+export const isJwtSecretInsecure = (): boolean =>
+  KNOWN_WEAK_SECRETS.has(config.jwt.secret) || config.jwt.secret.length < 32;
