@@ -23,8 +23,29 @@ function resolveSsl(): false | { rejectUnauthorized: boolean } {
   return isLocal ? false : { rejectUnauthorized: false };
 }
 
+/**
+ * Removes ssl-related query params (`sslmode`, `ssl`) from the connection string.
+ * Hosted Postgres URLs (Neon/Supabase/Render external) often carry
+ * `?sslmode=require`, which pg ≥8.22 treats as `verify-full`. That enforces full
+ * certificate verification and overrides the `ssl` option below, so the
+ * provider's private-CA / self-signed chain is rejected
+ * (SELF_SIGNED_CERT_IN_CHAIN). We drive TLS via `resolveSsl()` instead, so these
+ * params are stripped to avoid the conflict. Only the query string is touched.
+ */
+function cleanConnectionString(raw: string): string {
+  if (!raw.includes('?')) return raw;
+  const [base, query] = raw.split('?');
+  const kept = query
+    .split('&')
+    .filter((kv) => {
+      const key = kv.split('=')[0].toLowerCase();
+      return key !== 'sslmode' && key !== 'ssl';
+    });
+  return kept.length ? `${base}?${kept.join('&')}` : base;
+}
+
 export const pool: Pool = new PgPool({
-  connectionString: config.databaseUrl,
+  connectionString: cleanConnectionString(config.databaseUrl),
   ssl: resolveSsl(),
 });
 
