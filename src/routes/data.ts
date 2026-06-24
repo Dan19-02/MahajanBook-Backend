@@ -150,14 +150,14 @@ router.post('/customers', guard(async (req, res, businessId) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   if (!str(b.name) || !str(b.mobile)) throw new HttpError('Customer name and mobile are required.', 400);
   const customerType = (str(b.customerType) === 'WHOLESALER' ? 'WHOLESALER' : 'RETAILER') as CustomerType;
-  await createCustomer(businessId, {
+  const customer = await createCustomer(businessId, {
     name: str(b.name),
     mobile: str(b.mobile),
     businessName: str(b.businessName) || undefined,
     gstIn: str(b.gstIn).toUpperCase() || undefined,
     customerType,
   });
-  res.status(201).json(await snapshot(businessId));
+  res.status(201).json({ customer, snapshot: await snapshot(businessId) });
 }));
 
 router.patch('/customers/:id', guard(async (req, res, businessId) => {
