@@ -76,8 +76,23 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 }
 
 const SCHEMA = `
+  -- An account is the billing entity (the owner's organisation). It holds the
+  -- subscription plan and owns one or more stores (the "businesses" table).
+  CREATE TABLE IF NOT EXISTS accounts (
+    id                       TEXT PRIMARY KEY,
+    name                     TEXT NOT NULL,
+    "joinCode"               TEXT NOT NULL UNIQUE,
+    plan                     TEXT NOT NULL DEFAULT 'STARTER',
+    "razorpaySubscriptionId" TEXT,
+    "subscriptionStatus"     TEXT,
+    "currentPeriodEnd"       TEXT,
+    "createdAt"              TEXT NOT NULL
+  );
+
+  -- A "business" row is a STORE belonging to an account.
   CREATE TABLE IF NOT EXISTS businesses (
     id          TEXT PRIMARY KEY,
+    "accountId" TEXT,
     name        TEXT NOT NULL,
     "joinCode"  TEXT NOT NULL UNIQUE,
     address     TEXT,
@@ -86,17 +101,29 @@ const SCHEMA = `
     logo        TEXT,
     "upiVpa"    TEXT,
     "gstRate"   DOUBLE PRECISION NOT NULL DEFAULT 18,
+    locked      BOOLEAN NOT NULL DEFAULT false,
     "createdAt" TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS users (
     id             TEXT PRIMARY KEY,
+    "accountId"    TEXT,
     "businessId"   TEXT NOT NULL,
     name           TEXT NOT NULL,
     email          TEXT NOT NULL UNIQUE,
     "passwordHash" TEXT NOT NULL,
     role           TEXT NOT NULL DEFAULT 'STAFF',
     "createdAt"    TEXT NOT NULL
+  );
+
+  -- Which stores a STAFF user may access. Owners implicitly access every store
+  -- in their account, so they don't need rows here.
+  CREATE TABLE IF NOT EXISTS memberships (
+    id           TEXT PRIMARY KEY,
+    "userId"     TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "createdAt"  TEXT NOT NULL,
+    UNIQUE ("userId", "businessId")
   );
 
   CREATE TABLE IF NOT EXISTS products (
@@ -174,17 +201,69 @@ const SCHEMA = `
     "sentAt"              TEXT
   );
 
+  -- Column migrations for databases created before these columns existed
+  -- (idempotent). MUST run before the indexes below, which reference them.
+  ALTER TABLE businesses ADD COLUMN IF NOT EXISTS "gstRate"   DOUBLE PRECISION NOT NULL DEFAULT 18;
+  ALTER TABLE businesses ADD COLUMN IF NOT EXISTS "accountId" TEXT;
+  ALTER TABLE businesses ADD COLUMN IF NOT EXISTS locked      BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE invoices   ADD COLUMN IF NOT EXISTS "taxRate"   DOUBLE PRECISION NOT NULL DEFAULT 18;
+  ALTER TABLE users      ADD COLUMN IF NOT EXISTS "accountId" TEXT;
+
   CREATE INDEX IF NOT EXISTS idx_products_biz     ON products("businessId");
   CREATE INDEX IF NOT EXISTS idx_customers_biz    ON customers("businessId");
   CREATE INDEX IF NOT EXISTS idx_invoices_biz     ON invoices("businessId");
   CREATE INDEX IF NOT EXISTS idx_transactions_biz ON transactions("businessId");
   CREATE INDEX IF NOT EXISTS idx_reminders_biz    ON reminders("businessId");
   CREATE INDEX IF NOT EXISTS idx_reminders_due    ON reminders(status, "scheduledFor");
-
-  -- Migrations for databases created before these columns existed (idempotent).
-  ALTER TABLE businesses ADD COLUMN IF NOT EXISTS "gstRate" DOUBLE PRECISION NOT NULL DEFAULT 18;
-  ALTER TABLE invoices   ADD COLUMN IF NOT EXISTS "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 18;
+  CREATE INDEX IF NOT EXISTS idx_businesses_acct  ON businesses("accountId");
+  CREATE INDEX IF NOT EXISTS idx_users_acct       ON users("accountId");
+  CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships("userId");
+  CREATE INDEX IF NOT EXISTS idx_memberships_biz  ON memberships("businessId");
 `;
+
+const genId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * One-time backfill for the single-store → multi-store migration. Every legacy
+ * `business` (which had no accountId) becomes its own account: the store is
+ * linked to a fresh account, that account inherits the store's joinCode, the
+ * store's users are attached to the account, and STAFF users get a membership to
+ * the store (owners get implicit all-store access). Idempotent: only touches
+ * businesses whose accountId is still NULL.
+ */
+async function backfillAccounts(): Promise<void> {
+  await withTransaction(async (client) => {
+    const { rows: legacy } = await client.query<{ id: string; name: string; joinCode: string; createdAt: string }>(
+      'SELECT id, name, "joinCode", "createdAt" FROM businesses WHERE "accountId" IS NULL',
+    );
+    for (const biz of legacy) {
+      const accountId = genId('acc');
+      await client.query(
+        'INSERT INTO accounts (id, name, "joinCode", plan, "createdAt") VALUES ($1, $2, $3, $4, $5) ON CONFLICT ("joinCode") DO NOTHING',
+        [accountId, biz.name, biz.joinCode, 'STARTER', biz.createdAt],
+      );
+      // If the joinCode collided (shouldn't, codes are unique per business), look it up.
+      const { rows: acctRows } = await client.query<{ id: string }>(
+        'SELECT id FROM accounts WHERE "joinCode" = $1',
+        [biz.joinCode],
+      );
+      const acctId = acctRows[0]?.id ?? accountId;
+      await client.query('UPDATE businesses SET "accountId" = $1 WHERE id = $2', [acctId, biz.id]);
+      await client.query('UPDATE users SET "accountId" = $1 WHERE "businessId" = $2 AND "accountId" IS NULL', [acctId, biz.id]);
+      // STAFF of this store need an explicit membership; owners are implicit.
+      const { rows: staff } = await client.query<{ id: string }>(
+        `SELECT id FROM users WHERE "businessId" = $1 AND role = 'STAFF'`,
+        [biz.id],
+      );
+      for (const u of staff) {
+        await client.query(
+          'INSERT INTO memberships (id, "userId", "businessId", "createdAt") VALUES ($1, $2, $3, $4) ON CONFLICT ("userId", "businessId") DO NOTHING',
+          [genId('mem'), u.id, biz.id, biz.createdAt],
+        );
+      }
+    }
+  });
+}
 
 /** Connects and ensures the schema exists. Call once before the server listens. */
 export async function initDb(): Promise<void> {
@@ -192,4 +271,5 @@ export async function initDb(): Promise<void> {
     throw new Error('DATABASE_URL is not set. Provide a PostgreSQL connection string.');
   }
   await pool.query(SCHEMA);
+  await backfillAccounts();
 }

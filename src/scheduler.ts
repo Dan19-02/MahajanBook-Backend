@@ -2,10 +2,12 @@ import { pool } from './db.js';
 import { config, isWhatsAppConfigured } from './config.js';
 import { sendWhatsAppMessage } from './services/whatsapp.js';
 import { autoReminderMessage } from './services/reminders.js';
+import { assertReminderQuota, HttpError } from './store.js';
 import type { WhatsAppReminder } from './types.js';
 
 type DueReminder = WhatsAppReminder & {
   businessId: string;
+  accountId: string | null;
   businessName: string | null;
   invNumber: string | null;
 };
@@ -17,7 +19,7 @@ async function processDueReminders(): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
   // Single JOIN instead of two extra lookups per reminder (no N+1).
   const { rows } = await pool.query(
-    `SELECT r.*, b.name AS "businessName", i."invoiceNumber" AS "invNumber"
+    `SELECT r.*, b.name AS "businessName", b."accountId" AS "accountId", i."invoiceNumber" AS "invNumber"
        FROM reminders r
        LEFT JOIN businesses b ON b.id = r."businessId"
        LEFT JOIN invoices  i ON i.id = r."invoiceId"
@@ -28,6 +30,15 @@ async function processDueReminders(): Promise<void> {
   for (const rem of rows as DueReminder[]) {
     // Isolate failures so one bad reminder can't abort the whole cycle.
     try {
+      // Respect the account's monthly cap — leave over-quota reminders QUEUED.
+      if (rem.accountId) {
+        try {
+          await assertReminderQuota(rem.accountId);
+        } catch (err) {
+          if (err instanceof HttpError) continue;
+          throw err;
+        }
+      }
       const message = autoReminderMessage(rem, rem.businessName ?? 'CreditFlow', rem.invNumber ?? rem.invoiceId);
       const outcome = await sendWhatsAppMessage(rem.customerMobile, message);
       if (outcome.ok) {

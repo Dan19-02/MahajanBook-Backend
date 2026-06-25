@@ -1,7 +1,23 @@
+import type { Plan } from './plans.js';
+
 export type UserRole = 'OWNER' | 'STAFF';
 
+/** The billing entity (owner's organisation). Holds the subscription plan. */
+export interface Account {
+  id: string;
+  name: string;
+  joinCode: string;
+  plan: Plan;
+  razorpaySubscriptionId?: string;
+  subscriptionStatus?: string;
+  currentPeriodEnd?: string;
+  createdAt: string;
+}
+
+/** A store. (Table is named `businesses` for historical reasons.) */
 export interface Business {
   id: string;
+  accountId: string;
   name: string;
   joinCode: string;
   address?: string;
@@ -10,14 +26,20 @@ export interface Business {
   logo?: string;
   upiVpa?: string;
   gstRate: number;
+  locked: boolean;
   createdAt: string;
 }
+
+/** Alias to make new multi-store code read clearly. */
+export type Store = Business;
 
 export interface User {
   id: string;
   name: string;
   email: string;
   role: UserRole;
+  accountId: string;
+  /** Primary/home store — used as the default active store. */
   businessId: string;
 }
 

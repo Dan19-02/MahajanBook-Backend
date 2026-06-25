@@ -17,8 +17,19 @@ import {
   fireReminder,
   clearAllData,
   updateBusiness,
+  resolveActiveStore,
+  findBusinessById,
+  listStoresForAccount,
+  createStore,
+  setStoreLocked,
+  countActiveStores,
+  listAccountUsers,
+  setStaffStores,
+  loadAccountView,
+  setAccountPlan,
   type CreateInvoiceInput,
 } from '../store.js';
+import { PLANS, isPlan } from '../plans.js';
 import type { AuthedRequest } from '../middleware/auth.js';
 import type { CustomerType, UnitType, Product, Customer } from '../types.js';
 
@@ -26,24 +37,57 @@ const router = Router();
 
 type Handler = (req: AuthedRequest, res: Response) => Promise<void>;
 
-/** Wraps an async handler, injects the caller's businessId, and maps HttpError → status. */
+const mapError = (err: unknown, res: Response): void => {
+  if (err instanceof HttpError) {
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+  console.error('[data route] error:', err);
+  res.status(500).json({ error: 'Internal server error.' });
+};
+
+/**
+ * Wraps a store-scoped handler: resolves the active store (from the X-Store-Id
+ * header, validated against the caller's access), blocks writes to locked
+ * stores, and maps HttpError → status.
+ */
 const guard =
-  (fn: (req: AuthedRequest, res: Response, businessId: string) => Promise<void>): Handler =>
+  (fn: (req: AuthedRequest, res: Response, storeId: string) => Promise<void>): Handler =>
   async (req, res) => {
-    const businessId = req.user?.businessId;
-    if (!businessId) {
+    const user = req.user;
+    if (!user) {
       res.status(401).json({ error: 'Authentication required.' });
       return;
     }
     try {
-      await fn(req, res, businessId);
-    } catch (err) {
-      if (err instanceof HttpError) {
-        res.status(err.status).json({ error: err.message });
-        return;
+      const store = await resolveActiveStore(user, req.header('x-store-id') || undefined);
+      if (store.locked && req.method !== 'GET') {
+        throw new HttpError('This store is locked on your current plan. Upgrade or unlock it to make changes.', 403);
       }
-      console.error('[data route] error:', err);
-      res.status(500).json({ error: 'Internal server error.' });
+      await fn(req, res, store.id);
+    } catch (err) {
+      mapError(err, res);
+    }
+  };
+
+/** Wraps an account-level, owner-only handler (no active store required). */
+const ownerGuard =
+  (fn: (req: AuthedRequest, res: Response, accountId: string) => Promise<void>): Handler =>
+  async (req, res) => {
+    const user = req.user;
+    const account = req.account;
+    if (!user || !account) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    if (user.role !== 'OWNER') {
+      res.status(403).json({ error: 'Only the account owner can do this.' });
+      return;
+    }
+    try {
+      await fn(req, res, account.id);
+    } catch (err) {
+      mapError(err, res);
     }
   };
 
@@ -58,20 +102,86 @@ router.get('/bootstrap', guard(async (_req, res, businessId) => {
   res.json(await snapshot(businessId));
 }));
 
-// Update the shop profile (owner only) — name, address, GSTIN, phone, logo
-router.patch('/business', guard(async (req, res, businessId) => {
-  if (req.user?.role !== 'OWNER') throw new HttpError('Only the owner can update the business profile.', 403);
-  const b = (req.body ?? {}) as Record<string, unknown>;
-  const business = await updateBusiness(businessId, {
-    ...(b.name !== undefined ? { name: str(b.name) } : {}),
-    ...(b.address !== undefined ? { address: str(b.address) } : {}),
-    ...(b.gstIn !== undefined ? { gstIn: str(b.gstIn).toUpperCase() } : {}),
-    ...(b.phone !== undefined ? { phone: str(b.phone) } : {}),
-    ...(b.logo !== undefined ? { logo: typeof b.logo === 'string' && (b.logo === '' || b.logo.startsWith('data:image/')) ? b.logo : '' } : {}),
-    ...(b.upiVpa !== undefined ? { upiVpa: str(b.upiVpa) } : {}),
-    ...(b.gstRate !== undefined ? { gstRate: num(b.gstRate) } : {}),
-  });
-  res.json({ business });
+// ---- Account, plan & stores --------------------------------------------------
+
+const profileFields = (b: Record<string, unknown>) => ({
+  ...(b.name !== undefined ? { name: str(b.name) } : {}),
+  ...(b.address !== undefined ? { address: str(b.address) } : {}),
+  ...(b.gstIn !== undefined ? { gstIn: str(b.gstIn).toUpperCase() } : {}),
+  ...(b.phone !== undefined ? { phone: str(b.phone) } : {}),
+  ...(b.logo !== undefined ? { logo: typeof b.logo === 'string' && (b.logo === '' || b.logo.startsWith('data:image/')) ? b.logo : '' } : {}),
+  ...(b.upiVpa !== undefined ? { upiVpa: str(b.upiVpa) } : {}),
+  ...(b.gstRate !== undefined ? { gstRate: num(b.gstRate) } : {}),
+});
+
+// Current account with plan, limits and usage.
+router.get('/account', ownerGuard(async (_req, res, accountId) => {
+  res.json({ account: await loadAccountView(accountId) });
+}));
+
+// Set the plan directly. INTERIM: replaced by the Razorpay webhook in Phase 3 so
+// plan changes are payment-gated; kept now for testing and manual admin changes.
+router.post('/account/plan', ownerGuard(async (req, res, accountId) => {
+  const plan = str((req.body as Record<string, unknown>)?.plan).toUpperCase();
+  if (!isPlan(plan)) throw new HttpError('Invalid plan.', 400);
+  await setAccountPlan(accountId, plan);
+  res.json({ account: await loadAccountView(accountId) });
+}));
+
+// List the account's stores.
+router.get('/stores', ownerGuard(async (_req, res, accountId) => {
+  res.json({ stores: await listStoresForAccount(accountId) });
+}));
+
+// Create a store (owner only), enforcing the plan's store limit.
+router.post('/stores', ownerGuard(async (req, res, accountId) => {
+  const account = req.account!;
+  const limit = PLANS[account.plan].stores;
+  if (Number.isFinite(limit) && (await countActiveStores(accountId)) >= limit) {
+    throw new HttpError(`Your ${PLANS[account.plan].label} plan allows ${limit} store(s). Upgrade to add more.`, 403);
+  }
+  const name = str((req.body as Record<string, unknown>)?.name);
+  if (!name) throw new HttpError('Store name is required.', 400);
+  const store = await createStore(accountId, name);
+  res.status(201).json({ store, stores: await listStoresForAccount(accountId) });
+}));
+
+// Update a store's profile (owner only) — name, address, GSTIN, phone, logo, UPI, GST rate.
+router.patch('/stores/:id', ownerGuard(async (req, res, accountId) => {
+  const store = await findBusinessById(req.params.id);
+  if (!store || store.accountId !== accountId) throw new HttpError('Store not found.', 404);
+  const business = await updateBusiness(req.params.id, profileFields((req.body ?? {}) as Record<string, unknown>));
+  res.json({ business, stores: await listStoresForAccount(accountId) });
+}));
+
+// Lock / unlock a store (owner only). Unlocking re-checks the plan store limit.
+router.post('/stores/:id/lock', ownerGuard(async (req, res, accountId) => {
+  await setStoreLocked(accountId, req.params.id, true);
+  res.json({ stores: await listStoresForAccount(accountId) });
+}));
+router.post('/stores/:id/unlock', ownerGuard(async (req, res, accountId) => {
+  const account = req.account!;
+  const limit = PLANS[account.plan].stores;
+  if (Number.isFinite(limit) && (await countActiveStores(accountId)) >= limit) {
+    throw new HttpError(`Your ${PLANS[account.plan].label} plan allows ${limit} active store(s). Upgrade to unlock more.`, 403);
+  }
+  await setStoreLocked(accountId, req.params.id, false);
+  res.json({ stores: await listStoresForAccount(accountId) });
+}));
+
+// ---- Staff -------------------------------------------------------------------
+
+// List staff (and owner) with their store access.
+router.get('/staff', ownerGuard(async (_req, res, accountId) => {
+  res.json({ staff: await listAccountUsers(accountId) });
+}));
+
+// Replace a staff member's accessible stores.
+router.put('/staff/:userId/stores', ownerGuard(async (req, res, accountId) => {
+  const raw = (req.body as Record<string, unknown>)?.storeIds;
+  const storeIds = Array.isArray(raw) ? raw.map((s) => str(s)).filter(Boolean) : [];
+  await setStaffStores(accountId, req.params.userId, storeIds);
+  res.json({ staff: await listAccountUsers(accountId) });
 }));
 
 // Inventory

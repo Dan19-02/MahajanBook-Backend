@@ -1,14 +1,15 @@
 import { type Request, type Response, type NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
-import { findUserById } from '../store.js';
-import type { User } from '../types.js';
+import { findUserById, findAccountById } from '../store.js';
+import type { User, Account } from '../types.js';
 
 export interface AuthedRequest extends Request {
   user?: User;
+  account?: Account;
 }
 
-/** Express middleware that requires a valid Bearer JWT and attaches req.user. */
+/** Express middleware that requires a valid Bearer JWT and attaches req.user + req.account. */
 export async function authenticate(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -31,6 +32,7 @@ export async function authenticate(req: AuthedRequest, res: Response, next: Next
       return;
     }
     req.user = user;
+    req.account = await findAccountById(user.accountId);
     next();
   } catch (err) {
     console.error('[auth middleware] error:', err);

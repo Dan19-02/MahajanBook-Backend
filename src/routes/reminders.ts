@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Response } from 'express';
 import {
   draftReminderMessage,
   REMINDER_TONES,
@@ -6,6 +6,8 @@ import {
   type ReminderTone,
 } from '../services/reminders.js';
 import { MiniMaxError } from '../services/minimax.js';
+import { HttpError, assertReminderQuota } from '../store.js';
+import type { AuthedRequest } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -19,7 +21,7 @@ const DRAFT_REQUIRED: (keyof DraftReminderInput)[] = [
 ];
 
 /** POST /api/ai/draft — generate a WhatsApp payment reminder via MiniMax-M3. */
-router.post('/draft', async (req: Request, res: Response) => {
+router.post('/draft', async (req: AuthedRequest, res: Response) => {
   const body = (req.body ?? {}) as Partial<DraftReminderInput>;
 
   const missing = DRAFT_REQUIRED.filter((field) => {
@@ -34,9 +36,14 @@ router.post('/draft', async (req: Request, res: Response) => {
   }
 
   try {
+    if (req.account) await assertReminderQuota(req.account.id);
+
     const message = await draftReminderMessage(body as DraftReminderInput);
     return res.json({ message });
   } catch (err) {
+    if (err instanceof HttpError) {
+      return res.status(err.status).json({ error: err.message });
+    }
     if (err instanceof MiniMaxError) {
       return res.status(err.status).json({ error: err.message });
     }

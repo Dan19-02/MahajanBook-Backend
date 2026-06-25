@@ -1,5 +1,6 @@
 import { pool, withTransaction, type Executor } from './db.js';
 import { buildReminderSchedule, simulateSend } from './services/reminders.js';
+import { DEFAULT_PLAN, PLANS, serializeLimits, type Plan } from './plans.js';
 import type {
   Product,
   Customer,
@@ -10,6 +11,8 @@ import type {
   User,
   UserRole,
   Business,
+  Account,
+  Store,
 } from './types.js';
 
 /** Error that carries an HTTP status for the route layer. */
@@ -51,35 +54,117 @@ async function run(ex: Executor, sql: string, params: unknown[] = []): Promise<n
 }
 
 // ---------------------------------------------------------------------------
-// Businesses (tenants)
+// Accounts (billing entity / owner organisation)
 // ---------------------------------------------------------------------------
 
-export async function createBusiness(name: string): Promise<Business> {
-  // Generate a unique join code.
+async function uniqueJoinCode(): Promise<string> {
   let joinCode = code();
-  while (await one(pool, 'SELECT 1 FROM businesses WHERE "joinCode" = ?', [joinCode])) joinCode = code();
+  while (
+    (await one(pool, 'SELECT 1 FROM accounts WHERE "joinCode" = ?', [joinCode])) ||
+    (await one(pool, 'SELECT 1 FROM businesses WHERE "joinCode" = ?', [joinCode]))
+  ) {
+    joinCode = code();
+  }
+  return joinCode;
+}
 
-  const business: Business = { id: id('biz'), name, joinCode, gstRate: 18, createdAt: now() };
+export async function createAccount(name: string, client?: Executor): Promise<Account> {
+  const ex = client ?? pool;
+  const account: Account = { id: id('acc'), name, joinCode: await uniqueJoinCode(), plan: DEFAULT_PLAN, createdAt: now() };
+  await run(ex, 'INSERT INTO accounts (id, name, "joinCode", plan, "createdAt") VALUES (?, ?, ?, ?, ?)', [
+    account.id, account.name, account.joinCode, account.plan, account.createdAt,
+  ]);
+  return account;
+}
+
+export const findAccountById = (accountId: string): Promise<Account | undefined> =>
+  one<Account>(pool, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
+
+export const findAccountByJoinCode = (joinCode: string): Promise<Account | undefined> =>
+  one<Account>(pool, 'SELECT * FROM accounts WHERE "joinCode" = ?', [joinCode.trim().toUpperCase()]);
+
+export async function setAccountPlan(accountId: string, plan: Plan): Promise<void> {
+  await run(pool, 'UPDATE accounts SET plan = ? WHERE id = ?', [plan, accountId]);
+}
+
+/** Account plus its plan limits and current usage — drives the Plans UI and gating. */
+export interface AccountView extends Account {
+  limits: ReturnType<typeof serializeLimits>;
+  usage: { stores: number; staff: number; remindersThisMonth: number };
+}
+
+export async function loadAccountView(accountId: string): Promise<AccountView | undefined> {
+  const account = await findAccountById(accountId);
+  if (!account) return undefined;
+  const [stores, staff, remindersThisMonth] = await Promise.all([
+    countActiveStores(accountId),
+    countStaff(accountId),
+    countRemindersSentThisMonth(accountId),
+  ]);
+  return {
+    ...account,
+    limits: serializeLimits(PLANS[account.plan] ?? PLANS[DEFAULT_PLAN]),
+    usage: { stores, staff, remindersThisMonth },
+  };
+}
+
+export async function setAccountSubscription(
+  accountId: string,
+  fields: { plan?: Plan; razorpaySubscriptionId?: string | null; subscriptionStatus?: string | null; currentPeriodEnd?: string | null },
+): Promise<void> {
+  const acct = await findAccountById(accountId);
+  if (!acct) throw new HttpError('Account not found.', 404);
   await run(
     pool,
-    'INSERT INTO businesses (id, name, "joinCode", "createdAt") VALUES (?, ?, ?, ?)',
-    [business.id, business.name, business.joinCode, business.createdAt],
+    'UPDATE accounts SET plan = ?, "razorpaySubscriptionId" = ?, "subscriptionStatus" = ?, "currentPeriodEnd" = ? WHERE id = ?',
+    [
+      fields.plan ?? acct.plan,
+      fields.razorpaySubscriptionId === undefined ? acct.razorpaySubscriptionId ?? null : fields.razorpaySubscriptionId,
+      fields.subscriptionStatus === undefined ? acct.subscriptionStatus ?? null : fields.subscriptionStatus,
+      fields.currentPeriodEnd === undefined ? acct.currentPeriodEnd ?? null : fields.currentPeriodEnd,
+      accountId,
+    ],
   );
-  return business;
+}
+
+// ---------------------------------------------------------------------------
+// Stores (a "business" row belongs to an account)
+// ---------------------------------------------------------------------------
+
+export async function createStore(accountId: string, name: string, client?: Executor): Promise<Store> {
+  const ex = client ?? pool;
+  const store: Store = { id: id('biz'), accountId, name, joinCode: await uniqueJoinCode(), gstRate: 18, locked: false, createdAt: now() };
+  await run(
+    ex,
+    'INSERT INTO businesses (id, "accountId", name, "joinCode", "gstRate", locked, "createdAt") VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [store.id, accountId, store.name, store.joinCode, store.gstRate, store.locked, store.createdAt],
+  );
+  return store;
 }
 
 export const findBusinessById = (businessId: string): Promise<Business | undefined> =>
   one<Business>(pool, 'SELECT * FROM businesses WHERE id = ?', [businessId]);
 
-export const findBusinessByJoinCode = (joinCode: string): Promise<Business | undefined> =>
-  one<Business>(pool, 'SELECT * FROM businesses WHERE "joinCode" = ?', [joinCode.trim().toUpperCase()]);
+export const listStoresForAccount = (accountId: string): Promise<Store[]> =>
+  many<Store>(pool, 'SELECT * FROM businesses WHERE "accountId" = ? ORDER BY "createdAt" ASC', [accountId]);
+
+/** Active (non-locked) store count for an account — used to enforce the plan limit. */
+export async function countActiveStores(accountId: string): Promise<number> {
+  const row = await one<{ n: string }>(pool, 'SELECT COUNT(*) AS n FROM businesses WHERE "accountId" = ? AND locked = false', [accountId]);
+  return Number(row?.n ?? 0);
+}
+
+export async function setStoreLocked(accountId: string, businessId: string, locked: boolean): Promise<void> {
+  const changes = await run(pool, 'UPDATE businesses SET locked = ? WHERE id = ? AND "accountId" = ?', [locked, businessId, accountId]);
+  if (changes === 0) throw new HttpError('Store not found.', 404);
+}
 
 export async function updateBusiness(
   businessId: string,
   fields: Partial<Pick<Business, 'name' | 'address' | 'gstIn' | 'phone' | 'logo' | 'upiVpa' | 'gstRate'>>,
 ): Promise<Business> {
   const current = await findBusinessById(businessId);
-  if (!current) throw new HttpError('Business not found.', 404);
+  if (!current) throw new HttpError('Store not found.', 404);
   const gstRate = fields.gstRate ?? current.gstRate ?? 18;
   await run(
     pool,
@@ -99,6 +184,82 @@ export async function updateBusiness(
 }
 
 // ---------------------------------------------------------------------------
+// Memberships (which stores a STAFF user can access; owners access all)
+// ---------------------------------------------------------------------------
+
+export async function addMembership(userId: string, businessId: string, client?: Executor): Promise<void> {
+  await run(
+    client ?? pool,
+    'INSERT INTO memberships (id, "userId", "businessId", "createdAt") VALUES (?, ?, ?, ?) ON CONFLICT ("userId", "businessId") DO NOTHING',
+    [id('mem'), userId, businessId, now()],
+  );
+}
+
+export async function removeMembership(userId: string, businessId: string): Promise<void> {
+  await run(pool, 'DELETE FROM memberships WHERE "userId" = ? AND "businessId" = ?', [userId, businessId]);
+}
+
+/** Replaces a STAFF user's accessible stores with exactly `storeIds` (validated to the account). */
+export async function setStaffStores(accountId: string, userId: string, storeIds: string[]): Promise<void> {
+  return withTransaction(async (client) => {
+    const u = await one<{ role: UserRole; accountId: string }>(client, 'SELECT role, "accountId" FROM users WHERE id = ?', [userId]);
+    if (!u || u.accountId !== accountId) throw new HttpError('Staff member not found.', 404);
+    if (u.role !== 'STAFF') throw new HttpError("Only a staff member's store access can be changed.", 400);
+    const stores = await many<{ id: string }>(client, 'SELECT id FROM businesses WHERE "accountId" = ?', [accountId]);
+    const valid = new Set(stores.map((s) => s.id));
+    await run(client, 'DELETE FROM memberships WHERE "userId" = ?', [userId]);
+    for (const sid of storeIds.filter((s) => valid.has(s))) await addMembership(userId, sid, client);
+  });
+}
+
+const listMembershipStoreIds = (userId: string): Promise<{ businessId: string }[]> =>
+  many<{ businessId: string }>(pool, 'SELECT "businessId" FROM memberships WHERE "userId" = ?', [userId]);
+
+/** Stores a user may operate on: owners get every store in the account; staff get assigned ones. */
+export async function listAccessibleStores(user: Pick<User, 'id' | 'accountId' | 'role'>): Promise<Store[]> {
+  if (user.role === 'OWNER') return listStoresForAccount(user.accountId);
+  return many<Store>(
+    pool,
+    `SELECT b.* FROM businesses b
+       JOIN memberships m ON m."businessId" = b.id
+      WHERE m."userId" = ? AND b."accountId" = ?
+      ORDER BY b."createdAt" ASC`,
+    [user.id, user.accountId],
+  );
+}
+
+/** True if `user` may operate on `businessId` (same account, and owner or member). */
+export async function userCanAccessStore(user: Pick<User, 'id' | 'accountId' | 'role'>, businessId: string): Promise<boolean> {
+  const store = await findBusinessById(businessId);
+  if (!store || store.accountId !== user.accountId) return false;
+  if (user.role === 'OWNER') return true;
+  const member = await one(pool, 'SELECT 1 FROM memberships WHERE "userId" = ? AND "businessId" = ?', [user.id, businessId]);
+  return Boolean(member);
+}
+
+/**
+ * Resolves the store a request should act on: the requested one (if the user may
+ * access it), else the user's primary store, else their first accessible store.
+ * Throws 403 if the user has no accessible store or no access to the requested one.
+ */
+export async function resolveActiveStore(
+  user: Pick<User, 'id' | 'accountId' | 'role' | 'businessId'>,
+  requestedStoreId?: string,
+): Promise<Store> {
+  if (requestedStoreId) {
+    if (!(await userCanAccessStore(user, requestedStoreId))) {
+      throw new HttpError('You do not have access to this store.', 403);
+    }
+    return (await findBusinessById(requestedStoreId))!;
+  }
+  const stores = await listAccessibleStores(user);
+  if (stores.length === 0) {
+    throw new HttpError('No store is assigned to your login yet. Ask the owner to assign you one.', 403);
+  }
+  return stores.find((s) => s.id === user.businessId) ?? stores[0];
+}
+
+// ---------------------------------------------------------------------------
 // Users (auth)
 // ---------------------------------------------------------------------------
 
@@ -108,27 +269,91 @@ interface UserRow extends User {
 }
 
 export async function createUser(
+  accountId: string,
   businessId: string,
   name: string,
   email: string,
   passwordHash: string,
   role: UserRole,
+  client?: Executor,
 ): Promise<User> {
-  const user = { id: id('u'), businessId, name, email: email.toLowerCase(), role, createdAt: now() };
+  const user = { id: id('u'), accountId, businessId, name, email: email.toLowerCase(), role, createdAt: now() };
   await run(
-    pool,
-    `INSERT INTO users (id, "businessId", name, email, "passwordHash", role, "createdAt")
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [user.id, businessId, name, user.email, passwordHash, role, user.createdAt],
+    client ?? pool,
+    `INSERT INTO users (id, "accountId", "businessId", name, email, "passwordHash", role, "createdAt")
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [user.id, accountId, businessId, name, user.email, passwordHash, role, user.createdAt],
   );
-  return { id: user.id, businessId, name: user.name, email: user.email, role: user.role };
+  return { id: user.id, accountId, businessId, name: user.name, email: user.email, role: user.role };
 }
 
 export const findUserByEmail = (email: string): Promise<UserRow | undefined> =>
   one<UserRow>(pool, 'SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
 
 export const findUserById = (userId: string): Promise<User | undefined> =>
-  one<User>(pool, 'SELECT id, "businessId", name, email, role FROM users WHERE id = ?', [userId]);
+  one<User>(pool, 'SELECT id, "accountId", "businessId", name, email, role FROM users WHERE id = ?', [userId]);
+
+/** Staff (and owner) in an account, with the stores each can access. */
+export interface StaffMember {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  storeIds: string[];
+}
+
+export async function listAccountUsers(accountId: string): Promise<StaffMember[]> {
+  const users = await many<{ id: string; name: string; email: string; role: UserRole }>(
+    pool,
+    'SELECT id, name, email, role FROM users WHERE "accountId" = ? ORDER BY "createdAt" ASC',
+    [accountId],
+  );
+  const stores = await listStoresForAccount(accountId);
+  const allStoreIds = stores.map((s) => s.id);
+  const result: StaffMember[] = [];
+  for (const u of users) {
+    const storeIds =
+      u.role === 'OWNER'
+        ? allStoreIds
+        : (await listMembershipStoreIds(u.id)).map((m) => m.businessId).filter((bid) => allStoreIds.includes(bid));
+    result.push({ ...u, storeIds });
+  }
+  return result;
+}
+
+export async function countStaff(accountId: string): Promise<number> {
+  const row = await one<{ n: string }>(pool, `SELECT COUNT(*) AS n FROM users WHERE "accountId" = ? AND role = 'STAFF'`, [accountId]);
+  return Number(row?.n ?? 0);
+}
+
+/** Throws 403 when the account has hit its monthly reminder cap (no-op for unlimited). */
+export async function assertReminderQuota(accountId: string): Promise<void> {
+  const account = await findAccountById(accountId);
+  if (!account) throw new HttpError('Account not found.', 404);
+  const plan = PLANS[account.plan] ?? PLANS[DEFAULT_PLAN];
+  if (!Number.isFinite(plan.reminderCap)) return; // unlimited
+  if ((await countRemindersSentThisMonth(accountId)) >= plan.reminderCap) {
+    throw new HttpError(
+      `Monthly reminder limit reached (${plan.reminderCap}) on the ${plan.label} plan. Upgrade to send more this month.`,
+      403,
+    );
+  }
+}
+
+/** AI WhatsApp reminders marked SENT this calendar month, across all the account's stores. */
+export async function countRemindersSentThisMonth(accountId: string): Promise<number> {
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  const row = await one<{ n: string }>(
+    pool,
+    `SELECT COUNT(*) AS n
+       FROM reminders r JOIN businesses b ON b.id = r."businessId"
+      WHERE b."accountId" = ? AND r.status = 'SENT' AND r."sentAt" >= ?`,
+    [accountId, monthStart.toISOString()],
+  );
+  return Number(row?.n ?? 0);
+}
 
 // ---------------------------------------------------------------------------
 // Reads (all scoped to a business)
@@ -501,6 +726,9 @@ export async function deleteInvoice(businessId: string, invoiceId: string): Prom
 export async function fireReminder(businessId: string, reminderId: string): Promise<{ log: string }> {
   const reminder = await one<WhatsAppReminder>(pool, 'SELECT * FROM reminders WHERE id = ? AND "businessId" = ?', [reminderId, businessId]);
   if (!reminder) throw new HttpError('Reminder not found.', 404);
+
+  const store = await findBusinessById(businessId);
+  if (store) await assertReminderQuota(store.accountId);
 
   const result = simulateSend({
     customerName: reminder.customerName,
