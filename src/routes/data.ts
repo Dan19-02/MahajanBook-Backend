@@ -69,6 +69,7 @@ router.patch('/business', guard(async (req, res, businessId) => {
     ...(b.phone !== undefined ? { phone: str(b.phone) } : {}),
     ...(b.logo !== undefined ? { logo: typeof b.logo === 'string' && (b.logo === '' || b.logo.startsWith('data:image/')) ? b.logo : '' } : {}),
     ...(b.upiVpa !== undefined ? { upiVpa: str(b.upiVpa) } : {}),
+    ...(b.gstRate !== undefined ? { gstRate: num(b.gstRate) } : {}),
   });
   res.json({ business });
 }));
@@ -188,6 +189,7 @@ router.post('/invoices', guard(async (req, res, businessId) => {
     paymentStatus: str(b.paymentStatus) === 'CREDIT' ? 'CREDIT' : 'PAID',
     ptpDate: str(b.ptpDate) || undefined,
     discount: num(b.discount),
+    taxRate: b.taxRate !== undefined ? num(b.taxRate) : undefined,
     items,
   };
   const invoice = await createInvoice(businessId, input);

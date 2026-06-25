@@ -9,6 +9,7 @@ export interface Business {
   phone?: string;
   logo?: string;
   upiVpa?: string;
+  gstRate: number;
   createdAt: string;
 }
 
@@ -69,6 +70,7 @@ export interface Invoice {
   subtotal: number;
   discount: number;
   tax: number;
+  taxRate: number;
   grandTotal: number;
   paymentStatus: PaymentStatus;
   ptpDate?: string;

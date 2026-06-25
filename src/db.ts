@@ -85,6 +85,7 @@ const SCHEMA = `
     phone       TEXT,
     logo        TEXT,
     "upiVpa"    TEXT,
+    "gstRate"   DOUBLE PRECISION NOT NULL DEFAULT 18,
     "createdAt" TEXT NOT NULL
   );
 
@@ -137,6 +138,7 @@ const SCHEMA = `
     discount         DOUBLE PRECISION NOT NULL,
     tax              DOUBLE PRECISION NOT NULL,
     "grandTotal"     DOUBLE PRECISION NOT NULL,
+    "taxRate"        DOUBLE PRECISION NOT NULL DEFAULT 18,
     "paymentStatus"  TEXT NOT NULL,
     "ptpDate"        TEXT,
     "createdAt"      TEXT NOT NULL,
@@ -178,6 +180,10 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_transactions_biz ON transactions("businessId");
   CREATE INDEX IF NOT EXISTS idx_reminders_biz    ON reminders("businessId");
   CREATE INDEX IF NOT EXISTS idx_reminders_due    ON reminders(status, "scheduledFor");
+
+  -- Migrations for databases created before these columns existed (idempotent).
+  ALTER TABLE businesses ADD COLUMN IF NOT EXISTS "gstRate" DOUBLE PRECISION NOT NULL DEFAULT 18;
+  ALTER TABLE invoices   ADD COLUMN IF NOT EXISTS "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 18;
 `;
 
 /** Connects and ensures the schema exists. Call once before the server listens. */

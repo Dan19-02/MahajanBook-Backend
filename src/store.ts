@@ -59,7 +59,7 @@ export async function createBusiness(name: string): Promise<Business> {
   let joinCode = code();
   while (await one(pool, 'SELECT 1 FROM businesses WHERE "joinCode" = ?', [joinCode])) joinCode = code();
 
-  const business: Business = { id: id('biz'), name, joinCode, createdAt: now() };
+  const business: Business = { id: id('biz'), name, joinCode, gstRate: 18, createdAt: now() };
   await run(
     pool,
     'INSERT INTO businesses (id, name, "joinCode", "createdAt") VALUES (?, ?, ?, ?)',
@@ -76,13 +76,14 @@ export const findBusinessByJoinCode = (joinCode: string): Promise<Business | und
 
 export async function updateBusiness(
   businessId: string,
-  fields: Partial<Pick<Business, 'name' | 'address' | 'gstIn' | 'phone' | 'logo' | 'upiVpa'>>,
+  fields: Partial<Pick<Business, 'name' | 'address' | 'gstIn' | 'phone' | 'logo' | 'upiVpa' | 'gstRate'>>,
 ): Promise<Business> {
   const current = await findBusinessById(businessId);
   if (!current) throw new HttpError('Business not found.', 404);
+  const gstRate = fields.gstRate ?? current.gstRate ?? 18;
   await run(
     pool,
-    'UPDATE businesses SET name = ?, address = ?, "gstIn" = ?, phone = ?, logo = ?, "upiVpa" = ? WHERE id = ?',
+    'UPDATE businesses SET name = ?, address = ?, "gstIn" = ?, phone = ?, logo = ?, "upiVpa" = ?, "gstRate" = ? WHERE id = ?',
     [
       fields.name?.trim() || current.name,
       fields.address ?? current.address ?? null,
@@ -90,6 +91,7 @@ export async function updateBusiness(
       fields.phone ?? current.phone ?? null,
       fields.logo ?? current.logo ?? null,
       fields.upiVpa ?? current.upiVpa ?? null,
+      Math.min(100, Math.max(0, gstRate)),
       businessId,
     ],
   );
@@ -311,8 +313,8 @@ const txnValues = (t: TxnRow): unknown[] => [
 ];
 
 const INSERT_INVOICE =
-  `INSERT INTO invoices (id, "businessId", "invoiceNumber", "customerId", "customerName", "customerMobile", subtotal, discount, tax, "grandTotal", "paymentStatus", "ptpDate", "createdAt", items)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  `INSERT INTO invoices (id, "businessId", "invoiceNumber", "customerId", "customerName", "customerMobile", subtotal, discount, tax, "taxRate", "grandTotal", "paymentStatus", "ptpDate", "createdAt", items)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 const INSERT_REMINDER =
   `INSERT INTO reminders (id, "businessId", "invoiceId", "customerId", "customerName", "customerMobile", "invoiceAmount", "ptpDate", "triggerType", "scheduledFor", status, "razorpayPaymentLink", "sentAt")
@@ -328,7 +330,7 @@ export async function createInvoice(businessId: string, input: CreateInvoiceInpu
     }
 
     const discount = Math.max(0, input.discount ?? 0);
-    const taxRate = input.taxRate ?? 18;
+    const taxRate = Math.min(100, Math.max(0, input.taxRate ?? 18));
 
     const items: InvoiceItem[] = [];
     for (const { productId, quantity } of input.items) {
@@ -356,6 +358,7 @@ export async function createInvoice(businessId: string, input: CreateInvoiceInpu
       subtotal,
       discount,
       tax,
+      taxRate,
       grandTotal,
       paymentStatus: input.paymentStatus,
       ptpDate: input.paymentStatus === 'CREDIT' ? input.ptpDate : undefined,
@@ -365,7 +368,7 @@ export async function createInvoice(businessId: string, input: CreateInvoiceInpu
 
     await run(client, INSERT_INVOICE, [
       invoice.id, businessId, invoice.invoiceNumber, invoice.customerId, invoice.customerName, invoice.customerMobile,
-      invoice.subtotal, invoice.discount, invoice.tax, invoice.grandTotal, invoice.paymentStatus, invoice.ptpDate ?? null,
+      invoice.subtotal, invoice.discount, invoice.tax, invoice.taxRate, invoice.grandTotal, invoice.paymentStatus, invoice.ptpDate ?? null,
       invoice.createdAt, JSON.stringify(items),
     ]);
 
