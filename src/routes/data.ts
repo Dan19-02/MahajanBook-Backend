@@ -31,6 +31,7 @@ import {
   type CreateInvoiceInput,
 } from '../store.js';
 import { PLANS, isPlan } from '../plans.js';
+import { isBillingConfigured } from '../config.js';
 import type { AuthedRequest } from '../middleware/auth.js';
 import type { CustomerType, UnitType, Product, Customer } from '../types.js';
 
@@ -123,6 +124,8 @@ router.get('/account', ownerGuard(async (_req, res, accountId) => {
 // Set the plan directly. INTERIM: replaced by the Razorpay webhook in Phase 3 so
 // plan changes are payment-gated; kept now for testing and manual admin changes.
 router.post('/account/plan', ownerGuard(async (req, res, accountId) => {
+  // Once Razorpay is configured, plan changes must go through paid checkout.
+  if (isBillingConfigured()) throw new HttpError('Change your plan from the Plans page (paid checkout).', 403);
   const plan = str((req.body as Record<string, unknown>)?.plan).toUpperCase();
   if (!isPlan(plan)) throw new HttpError('Invalid plan.', 400);
   await setAccountPlan(accountId, plan);
