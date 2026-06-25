@@ -27,6 +27,7 @@ import {
   setStaffStores,
   loadAccountView,
   setAccountPlan,
+  enforcePlanStoreLimit,
   type CreateInvoiceInput,
 } from '../store.js';
 import { PLANS, isPlan } from '../plans.js';
@@ -125,6 +126,7 @@ router.post('/account/plan', ownerGuard(async (req, res, accountId) => {
   const plan = str((req.body as Record<string, unknown>)?.plan).toUpperCase();
   if (!isPlan(plan)) throw new HttpError('Invalid plan.', 400);
   await setAccountPlan(accountId, plan);
+  await enforcePlanStoreLimit(accountId);
   res.json({ account: await loadAccountView(accountId) });
 }));
 

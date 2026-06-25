@@ -3,10 +3,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { config, isAiConfigured, isJwtSecretInsecure, isWhatsAppConfigured } from './config.js';
+import { isBillingConfigured } from './services/razorpay.js';
 import { initDb } from './db.js';
 import authRouter from './routes/auth.js';
 import aiRouter from './routes/reminders.js';
 import dataRouter from './routes/data.js';
+import billingRouter, { webhookHandler } from './routes/billing.js';
 import { authenticate } from './middleware/auth.js';
 import { startScheduler } from './scheduler.js';
 
@@ -17,6 +19,11 @@ app.set('trust proxy', config.trustProxy);
 
 app.use(helmet());
 app.use(cors({ origin: config.corsOrigin }));
+
+// Razorpay webhook must see the raw body to verify its HMAC signature, so it is
+// registered BEFORE the JSON body parser.
+app.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), webhookHandler);
+
 app.use(express.json({ limit: '1mb' })); // allows a small base64 shop logo
 
 // Public
@@ -25,6 +32,7 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     aiConfigured: isAiConfigured(),
     whatsappConfigured: isWhatsAppConfigured(),
+    billingConfigured: isBillingConfigured(),
     model: config.nvidia.model,
   });
 });
@@ -46,6 +54,9 @@ const aiLimiter = rateLimit({
   message: { error: 'Too many requests. Please wait a moment and try again.' },
 });
 app.use('/api/ai', authenticate, aiLimiter, aiRouter);
+
+// Subscription billing (Razorpay): authenticated (subscribe/verify; webhook is above).
+app.use('/api/billing', authenticate, billingRouter);
 
 // All business data: authenticated.
 app.use('/api', authenticate, dataRouter);

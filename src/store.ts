@@ -83,6 +83,25 @@ export const findAccountById = (accountId: string): Promise<Account | undefined>
 export const findAccountByJoinCode = (joinCode: string): Promise<Account | undefined> =>
   one<Account>(pool, 'SELECT * FROM accounts WHERE "joinCode" = ?', [joinCode.trim().toUpperCase()]);
 
+export const findAccountBySubscriptionId = (subId: string): Promise<Account | undefined> =>
+  one<Account>(pool, 'SELECT * FROM accounts WHERE "razorpaySubscriptionId" = ?', [subId]);
+
+/**
+ * Enforces the plan's store limit by locking the most-recently-created active
+ * stores beyond the cap (keeps data, makes them read-only). Used after a
+ * downgrade so "extras" lock automatically; no-op for unlimited plans.
+ */
+export async function enforcePlanStoreLimit(accountId: string): Promise<void> {
+  const account = await findAccountById(accountId);
+  if (!account) return;
+  const limit = (PLANS[account.plan] ?? PLANS[DEFAULT_PLAN]).stores;
+  if (!Number.isFinite(limit)) return;
+  const active = (await listStoresForAccount(accountId)).filter((s) => !s.locked); // createdAt ASC
+  for (const s of active.slice(limit)) {
+    await run(pool, 'UPDATE businesses SET locked = true WHERE id = ?', [s.id]);
+  }
+}
+
 export async function setAccountPlan(accountId: string, plan: Plan): Promise<void> {
   await run(pool, 'UPDATE accounts SET plan = ? WHERE id = ?', [plan, accountId]);
 }

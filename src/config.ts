@@ -46,7 +46,22 @@ export const config = {
     apiVersion: process.env.WHATSAPP_API_VERSION?.trim() || 'v21.0',
     schedulerIntervalMs: Number(process.env.WHATSAPP_SCHEDULER_INTERVAL_MS ?? 5 * 60 * 1000),
   },
+  razorpay: {
+    keyId: process.env.RAZORPAY_KEY_ID?.trim() ?? '',
+    keySecret: process.env.RAZORPAY_KEY_SECRET?.trim() ?? '',
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET?.trim() ?? '',
+    // Razorpay Subscription Plan IDs, one per tier (created in the Razorpay dashboard).
+    planIds: {
+      STARTER: process.env.RAZORPAY_PLAN_STARTER?.trim() ?? '',
+      GROWTH: process.env.RAZORPAY_PLAN_GROWTH?.trim() ?? '',
+      UNLIMITED: process.env.RAZORPAY_PLAN_UNLIMITED?.trim() ?? '',
+    },
+  },
 } as const;
+
+/** True when Razorpay API credentials are present (enables subscription billing). */
+export const isBillingConfigured = (): boolean =>
+  Boolean(config.razorpay.keyId && config.razorpay.keySecret);
 
 /** True when an NVIDIA API key is available for MiniMax-M3 calls. */
 export const isAiConfigured = (): boolean => config.nvidia.apiKey.length > 0;
