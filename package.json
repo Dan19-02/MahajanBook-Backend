@@ -1,9 +1,9 @@
 {
-  "name": "ledgix-backend",
+  "name": "mahajanbook-backend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Ledgix backend — MiniMax-M3 (NVIDIA) powered payment-reminder drafting API.",
+  "description": "MahajanBook backend — MiniMax-M3 (NVIDIA) powered payment-reminder drafting API.",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

@@ -37,7 +37,7 @@ const TONE_GUIDE: Record<ReminderTone, string> = {
 
 /** Builds the prompt and asks MiniMax-M3 for a WhatsApp-ready reminder message. */
 export async function draftReminderMessage(input: DraftReminderInput): Promise<string> {
-  const businessName = input.businessName?.trim() || 'CreditFlow';
+  const businessName = input.businessName?.trim() || 'MahajanBook';
   const language = input.language?.trim() || 'English';
 
   const system = [
@@ -112,7 +112,7 @@ export function buildReminderSchedule(invoice: ScheduleInvoiceInput): WhatsAppRe
 
   const ptp = new Date(invoice.ptpDate);
   const todayStr = toDateStr(new Date());
-  const payLink = `https://rzp.io/i/cf_${invoice.invoiceNumber.toLowerCase()}`;
+  const payLink = `https://rzp.io/i/mb_${invoice.invoiceNumber.toLowerCase()}`;
 
   return TRIGGERS.map(({ type, offset }) => {
     const triggerDate = new Date(ptp);

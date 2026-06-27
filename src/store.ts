@@ -595,7 +595,7 @@ export async function createInvoice(businessId: string, input: CreateInvoiceInpu
 
     const invoice: Invoice = {
       id: id('inv'),
-      invoiceNumber: `CF-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      invoiceNumber: `MB-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
       customerId: customer.id,
       customerName: customer.name,
       customerMobile: customer.mobile,

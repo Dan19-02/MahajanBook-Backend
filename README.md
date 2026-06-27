@@ -1,6 +1,6 @@
-# Ledgix Backend
+# MahajanBook Backend
 
-An **Express + TypeScript** API for the Ledgix (CreditFlow) app. It provides:
+An **Express + TypeScript** API for the MahajanBook app. It provides:
 
 - **JWT authentication** (register / login) with bcrypt-hashed passwords.
 - A **shared PostgreSQL database** (via `pg`) holding all business data
@@ -13,7 +13,7 @@ An **Express + TypeScript** API for the Ledgix (CreditFlow) app. It provides:
 ## Setup
 
 ```bash
-cd "Ledgix Backend"
+cd MahajanBook-Backend
 npm install
 cp .env.example .env   # set DATABASE_URL, NVIDIA_API_KEY, and a JWT_SECRET
 npm run dev            # http://localhost:3001  (auto-reloads)

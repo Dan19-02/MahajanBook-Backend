@@ -69,7 +69,7 @@ app.use((_req, res) => {
 async function start(): Promise<void> {
   await initDb();
   app.listen(config.port, () => {
-    console.log(`Ledgix backend listening on http://localhost:${config.port}`);
+    console.log(`MahajanBook backend listening on http://localhost:${config.port}`);
     if (!isAiConfigured()) {
       console.warn('⚠  NVIDIA_API_KEY is not set — /api/ai/draft will return 503 until it is configured.');
     }

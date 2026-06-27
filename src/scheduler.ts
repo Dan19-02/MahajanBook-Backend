@@ -39,7 +39,7 @@ async function processDueReminders(): Promise<void> {
           throw err;
         }
       }
-      const message = autoReminderMessage(rem, rem.businessName ?? 'CreditFlow', rem.invNumber ?? rem.invoiceId);
+      const message = autoReminderMessage(rem, rem.businessName ?? 'MahajanBook', rem.invNumber ?? rem.invoiceId);
       const outcome = await sendWhatsAppMessage(rem.customerMobile, message);
       if (outcome.ok) {
         await pool.query(`UPDATE reminders SET status = 'SENT', "sentAt" = $1 WHERE id = $2`, [new Date().toISOString(), rem.id]);
