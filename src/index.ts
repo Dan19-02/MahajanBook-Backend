@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { config, isAiConfigured, isJwtSecretInsecure, isWhatsAppConfigured } from './config.js';
+import { config, isAiConfigured, isButterbaseConfigured, isJwtSecretInsecure, isWhatsAppConfigured } from './config.js';
 import { isBillingConfigured } from './services/razorpay.js';
 import { initDb } from './db.js';
 import authRouter from './routes/auth.js';
@@ -33,6 +33,7 @@ app.get('/api/health', (_req, res) => {
     aiConfigured: isAiConfigured(),
     whatsappConfigured: isWhatsAppConfigured(),
     billingConfigured: isBillingConfigured(),
+    googleConfigured: isButterbaseConfigured(),
     model: config.nvidia.model,
   });
 });

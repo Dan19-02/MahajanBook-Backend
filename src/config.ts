@@ -57,7 +57,16 @@ export const config = {
       UNLIMITED: process.env.RAZORPAY_PLAN_UNLIMITED?.trim() ?? '',
     },
   },
+  butterbase: {
+    // Butterbase app id (e.g. app_xxxx). When set, /api/auth/google verifies a
+    // butterbase end-user token against this app and signs the user into MahajanBook.
+    appId: process.env.BUTTERBASE_APP_ID?.trim() ?? '',
+    apiBase: (process.env.BUTTERBASE_API_BASE ?? 'https://api.butterbase.ai').replace(/\/+$/, ''),
+  },
 } as const;
+
+/** True when butterbase Google sign-in is wired (a butterbase app id is set). */
+export const isButterbaseConfigured = (): boolean => config.butterbase.appId.length > 0;
 
 /** True when Razorpay API credentials are present (enables subscription billing). */
 export const isBillingConfigured = (): boolean =>
